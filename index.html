@@ -1,0 +1,695 @@
+#@&cls&set cd=%~dp0&powershell -EP Bypass -C "gc '%~f0' -enc UTF8|out-string|iex"&pause&exit
+$ErrorActionPreference = 'Stop'; cd $env:temp; [Environment]::CurrentDirectory = $pwd
+
+$host.UI.RawUI.BufferSize = New-Object Management.Automation.Host.Size(138,138)
+Add-Type @'
+using System.Runtime.InteropServices;
+public static class WinApi{
+	[DllImport("user32.dll")] public static extern bool SetWindowPos(uint hWnd,uint hAfter,uint x,uint y,uint cx,uint cy,uint flags);
+	[DllImport("kernel32.dll")] public static extern uint GetConsoleWindow();
+}
+'@; Add-Type -Ass System.Windows.Forms; $w = [Windows.Forms.Screen]::PrimaryScreen.Bounds.Width
+[void][WinApi]::SetWindowPos(([WinApi]::GetConsoleWindow()), $null, ($w-1060)/2, 20, 1060, 386, 0) # X,Y,H
+
+###################################################### 检查当前用户是否属于管理员组
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (!$isAdmin)
+{
+	Write-Host "很遗憾! 电脑当前登陆的用户『$($env:USERNAME)』没有管理员权限, 我无法执行! `n若仍想执行, 请按如下步骤操作:`n`n1.先注销当前用户,选择『Administrator』帐户登陆;`n2.然后执行D盘下名为『__将$($env:USERNAME)用户加入管理员组.bat』的文件;`n3.重启系统,选择『$($env:USERNAME)』用户登陆;`n4.再次尝试在运行框中执行我`n`n20秒后自动退出！"
+	$cmdContent = @"
+%1 mshta vbscript:CreateObject("Shell.Application").ShellExecute("cmd.exe","/c %~s0 ::","","runas",1)(window.close)&&exit
+net localgroup Administrators "$env:USERNAME" /add
+echo "$env:USERNAME 用户, 已成功添加到管理员组!"
+"@
+	Set-Content -Path "D:\__将$($env:USERNAME)用户加入管理员组.bat" -Value $cmdContent
+	sleep 20
+	exit
+}
+
+###################################################### 检测杀毒或防毒软件
+# 定义进程名-杀毒或防毒软件名的哈希表
+$processInfo = @{
+	"360sd"    = "360杀毒"
+	"360Tray"  = "360安全卫士"
+	#"HipsTray" = "火绒安全软件"
+	"QQPCTray" = "腾讯电脑管家"
+}
+
+function Check-Processes
+{
+	foreach ($processName in $processInfo.Keys)
+	{
+		$process = Get-Process -Name $processName -ErrorAction SilentlyContinue
+		if ($process)
+		{
+			# 返回对应的软件名称
+			return $processInfo[$processName]
+		}
+	}
+	return $null
+}
+
+# 初始化检查
+$softwareName = Check-Processes
+
+# 如果检测到任何一个进程在运行
+while ($softwareName)
+{
+	# 弹出消息框，显示两个按钮：确定 和 取消
+	$result = [Windows.Forms.MessageBox]::Show("您的系统当前正在运行『$softwareName』, 它阻止了我的运行!`n`n✅ 如果您仍想运行我, 请按如下步骤操作：`n1.先在桌面任务栏右下角找到『$softwareName』的图标；`n2.在图标上方按下鼠标右键 ➤ 选择退出项 ➤ 确认退出；`n3.最后单击『确定』按钮再次尝试运行我。`n`n🛑 如果您不想运行我：单击 X 或『取消』按钮。", "警告", 'OKCancel', 'Warning')
+	
+	if ($result -eq 'Cancel')
+	{
+		# 用户选择取消，退出脚本
+		Write-Host "用户选择取消，脚本退出。"
+		exit
+	}
+	elseif ($result -eq 'OK')
+	{
+		# 用户选择确定，再次检查进程
+		$softwareName = Check-Processes
+		if (-not $softwareName)
+		{
+			cls
+			Write-Host "未检测到流行杀毒或防毒软件的相关进程，继续执行脚本。"
+			break
+		}
+		else
+		{
+			cls
+			Write-Host "检测到『$softwareName』相关进程，等待用户关闭。"
+		}
+	}
+}
+
+###################################################### 检查GHFXJ工作目录
+function FindOrCreateFolder {
+    param (
+        [string]$mainFolderName,        # 主文件夹名（必选）
+        [string]$subFolderName          # 子文件夹名（可选，不提供时不处理子文件夹）
+    )
+
+    # 获取所有固定硬盘（排除移动硬盘/U盘）- PowerShell 2.0 使用 gwmi
+    $fixedDisks = gwmi Win32_DiskDrive | Where-Object { $_.MediaType -eq 'Fixed hard disk media' }
+
+    $systemDrive = $env:SystemDrive      # 系统盘符
+    $targetDrive = $null                  # 记录可用空间最大的分区
+    $maxFreeSpace = 0                      # 最大可用空间（字节）
+    $mainFolderPath = $null                # 最终确定的主文件夹路径
+
+    # 遍历每个固定硬盘
+    foreach ($disk in $fixedDisks) {
+        # 获取该硬盘上的所有分区 - PowerShell 2.0 使用 gwmi
+        $partitions = gwmi -Query "ASSOCIATORS OF {Win32_DiskDrive.DeviceID='$($disk.DeviceID)'} WHERE AssocClass=Win32_DiskDriveToDiskPartition"
+
+        foreach ($partition in $partitions) {
+            # 获取每个分区对应的逻辑卷（盘符）- PowerShell 2.0 使用 gwmi
+            $volumes = gwmi -Query "ASSOCIATORS OF {Win32_DiskPartition.DeviceID='$($partition.DeviceID)'} WHERE AssocClass=Win32_LogicalDiskToPartition"
+
+            foreach ($volume in $volumes) {
+                # 只处理有盘符且非系统盘的分区
+                if ($volume.DeviceID -and $volume.DeviceID -ne $systemDrive) {
+                    $potentialPath = "$($volume.DeviceID)\$mainFolderName"
+
+                    # 如果主文件夹已存在，记录路径并退出所有循环
+                    if (Test-Path $potentialPath) {
+                        $mainFolderPath = $potentialPath
+                        break
+                    }
+
+                    # 记录可用空间最大的分区（用于后续创建主文件夹）
+                    if ($volume.FreeSpace -gt $maxFreeSpace) {
+                        $maxFreeSpace = $volume.FreeSpace
+                        $targetDrive = $volume
+                    }
+                }
+            }
+            if ($mainFolderPath) { break }   # 找到后退出分区循环
+        }
+        if ($mainFolderPath) { break }       # 找到后退出磁盘循环
+    }
+
+    # 如果未找到现成主文件夹，则在可用空间最大的分区根目录创建
+    if (-not $mainFolderPath -and $targetDrive) {
+        $mainFolderPath = "$($targetDrive.DeviceID)\$mainFolderName"
+        New-Item -Path $mainFolderPath -ItemType Directory -Force | Out-Null
+    }
+
+    # 如果最终无法获得主文件夹路径（无合适分区），则返回 $null
+    if (-not $mainFolderPath) {
+        return $null
+    }
+
+    # 判断是否处理子文件夹：只有当 $subFolderName 参数提供且非空时才处理
+    if ($subFolderName) {
+        $subFolderPath = Join-Path -Path $mainFolderPath -ChildPath $subFolderName
+        if (-not (Test-Path $subFolderPath)) {
+            New-Item -Path $subFolderPath -ItemType Directory -Force | Out-Null
+        }
+        return $subFolderPath   # 返回子文件夹完整路径
+    }
+    else {
+        return $mainFolderPath   # 只返回主文件夹路径
+    }
+}
+
+$cd = FindOrCreateFolder "___GHFXJ___" "YC"
+if ($cd) {
+    cd $cd; [Environment]::CurrentDirectory = $cd
+} else {
+    Write-Host "未找到合适的固定硬盘分区，无法设置工作路径。" -ForegroundColor Red
+}
+
+# 定义变量
+$temp = $env:temp
+$repo = "https://cnb.cool/GHFXJ/PS/-/git/raw/main"
+$currentDir = $pwd.Path
+$toolsDir = Join-Path $HOME "__Tools"
+
+# 工具下载链接
+$curlUrl = "$repo/SOFT/curl.7z"
+$7zrUrl  = "$repo/SOFT/7zr.exe"
+
+# 程序下载链接映射
+$programUrls = @{
+    YC         = "$repo/YC/YC.7z"
+    frps       = "$repo/SOFT/FRP/frps.7z"
+    frpc       = "$repo/SOFT/FRP/frpc.7z"
+    frpc7      = "$repo/SOFT/FRP/frpc7.7z"
+    tvnviewer  = "$repo/SOFT/FRP/tvnviewer.7z"
+    tvnserver  = "$repo/SOFT/FRP/tvnserver.7z"
+}
+
+# 辅助函数：检查命令是否存在
+function Test-Command($cmd) {
+    Get-Command $cmd -EA 0 > $null
+    return $?
+}
+
+# 下载文件：优先 curl.exe，否则 WebClient
+function Download-File($url, $output) {
+    Write-Host "正在下载：$url"
+    if (Test-Command "curl.exe") {
+        Write-Host "使用 curl.exe 下载..."
+        & curl.exe -s -L -o "$output" $url 2>$null
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $output)) { 
+            Write-Host "下载成功：$output"
+            return 
+        }
+        Write-Host "curl.exe 下载失败，尝试 WebClient..." -ForegroundColor Yellow
+    }
+    try {
+        (New-Object System.Net.WebClient).DownloadFile($url, $output)
+        if (Test-Path $output) {
+            Write-Host "下载成功：$output"
+            return
+        } else {
+            throw "WebClient 下载完成但文件不存在"
+        }
+    } catch {
+        throw "下载失败：$url，错误：$_"
+    }
+}
+
+# 解压 7z（使用 7zr.exe）
+function Expand-7z($archive, $dest) {
+    Write-Host "正在解压：$archive -> $dest"
+    if (-not (Test-Path $dest)) {
+        New-Item -ItemType Directory -Path $dest -Force | Out-Null
+    }
+    Push-Location $dest
+    & 7zr.exe x "$archive" -y > $null 2>&1
+    $exitCode = $LASTEXITCODE
+    Pop-Location
+    if ($exitCode -ne 0) {
+        throw "7zr.exe 解压失败，退出代码：$exitCode"
+    }
+    Write-Host "解压完成"
+}
+
+# 将指定目录添加到 PATH
+function Add-DirToPath($dir) {
+    if ($env:Path -notlike "*$dir*") {
+        $env:Path = "$dir;$env:Path"
+        Write-Host "已将目录添加到 PATH：$dir"
+    }
+}
+
+# 确保工具可用
+function Ensure-Tools {
+    if (-not (Test-Path $toolsDir)) {
+        New-Item -ItemType Directory -Path $toolsDir -Force | Out-Null
+        Write-Host "创建工具目录：$toolsDir"
+    }
+
+    $7zrExe = Join-Path $toolsDir "7zr.exe"
+    if (-not (Test-Path $7zrExe)) {
+        Write-Host "7zr.exe 不存在，正在下载到 $toolsDir ..."
+        try {
+            (New-Object System.Net.WebClient).DownloadFile($7zrUrl, $7zrExe)
+        } catch {
+            Write-Host "错误：下载 7zr.exe 失败。" -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "7zr.exe 已就绪。"
+    }
+
+    Add-DirToPath $toolsDir
+
+    $curlExe = Join-Path $toolsDir "curl.exe"
+    if (-not (Test-Path $curlExe)) {
+        Write-Host "curl.exe 不存在，正在下载..."
+        $arcPath = Join-Path $temp "curl.7z"
+
+        if (Test-Path $arcPath) { Remove-Item -LiteralPath $arcPath -Force -EA 0 }
+
+        try {
+            (New-Object System.Net.WebClient).DownloadFile($curlUrl, $arcPath)
+        } catch {
+            Write-Host "错误：下载 curl.7z 失败。" -ForegroundColor Red
+            exit 1
+        }
+
+        Expand-7z $arcPath $toolsDir
+        Remove-Item -LiteralPath $arcPath -Force -EA 0
+
+        if (-not (Test-Path $curlExe)) {
+            Write-Host "错误：解压后未找到 curl.exe" -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "curl.exe 已就绪。"
+    }
+}
+
+# 主函数：确保程序存在
+function Ensure-App {
+    param(
+        [string[]]$programNames,
+        [string]$targetDir = $null
+    )
+
+    if ([string]::IsNullOrEmpty($targetDir)) {
+        $targetDir = $currentDir
+    }
+
+    $targetDir = [System.IO.Path]::GetFullPath($targetDir)
+    if (-not (Test-Path $targetDir)) {
+        New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+        Write-Host "创建目标目录：$targetDir"
+    }
+
+    Write-Host "目标目录：$targetDir"
+
+    $missing = @()
+    foreach ($name in $programNames) {
+        $exePath = Join-Path $targetDir "${name}.exe"
+        if (-not (Test-Path $exePath)) {
+            $missing += $name
+        } else {
+            Write-Host "${name}.exe 已存在，跳过。"
+        }
+    }
+
+    if ($missing.Count -eq 0) {
+        Write-Host "所有指定程序均已存在，无需下载。"
+        Add-DirToPath $targetDir
+        return
+    }
+
+    Ensure-Tools
+
+    $shouldAddPath = $true
+
+    foreach ($name in $missing) {
+        if (-not $programUrls.ContainsKey($name)) {
+            Write-Host "错误：未定义 $name 的下载链接" -ForegroundColor Red
+            continue
+        }
+
+        Write-Host "准备下载 $name ..."
+        $url = $programUrls[$name]
+        $arcPath = Join-Path $temp "${name}.7z"
+
+        Download-File $url $arcPath
+
+        $extractTemp = Join-Path $temp ([System.Guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $extractTemp -Force | Out-Null
+
+        Expand-7z $arcPath $extractTemp
+
+        $files = Get-ChildItem $extractTemp -Recurse | Where-Object { -not $_.PSIsContainer }
+        $fileCount = @($files).Count
+        Write-Host "解压后包含文件数：$fileCount"
+
+        if ($fileCount -gt 1) {
+            Write-Host "注意：${name}.7z 包含多个文件，将不会把 $targetDir 添加到 PATH。"
+            $shouldAddPath = $false
+        } elseif ($fileCount -eq 0) {
+            Write-Host "错误：${name}.7z 解压后未找到任何文件" -ForegroundColor Red
+            exit 1
+        }
+
+        Write-Host "正在复制文件到目标目录：$targetDir"
+        Copy-Item -Path "$extractTemp\*" -Destination $targetDir -Recurse -Force
+
+        $targetExe = Join-Path $targetDir "${name}.exe"
+        if (Test-Path $targetExe) {
+            Write-Host "${name}.exe 已成功部署到 $targetDir"
+        } else {
+            Write-Host "警告：复制后未找到 ${name}.exe" -ForegroundColor Yellow
+        }
+
+        Remove-Item -LiteralPath $extractTemp -Recurse -Force
+        Remove-Item -LiteralPath $arcPath -Force -EA 0
+    }
+
+    if ($shouldAddPath) {
+        Add-DirToPath $targetDir
+    } else {
+        Write-Host "由于存在多文件包，跳过 PATH 添加。"
+    }
+}
+
+# 根据系统版本决定 frpc 名称
+$osMajor = [Environment]::OSVersion.Version.Major
+if ($osMajor -ge 10) {
+    $frpcName = "frpc"
+    $frpcConfigFile = "frpc.toml"
+    $configFormat = "toml"
+} else {
+    $frpcName = "frpc7"
+    $frpcConfigFile = "frpc.ini"
+    $configFormat = "ini"
+}
+
+# 调用示例
+Ensure-App "tvnserver", $frpcName
+
+# 强制结束进程
+Stop-Process -Name frpc -Force -EA 0
+Stop-Process -Name tvnserver -Force -EA 0
+
+$randPass = Get-Random -Minimum 100000 -Maximum 1000000
+
+# ===== 启动 4455 端口的 HTTP 服务（使用稳定的 JSON 解析）=====
+$httpJob = Start-Job -Name "HttpService4455" -ScriptBlock {
+    param($workingDir)
+    Set-Location $workingDir
+
+    $Port = 4455
+    $Prefix = "http://+:$Port/"
+
+    $listener = New-Object System.Net.HttpListener
+    $listener.Prefixes.Add($Prefix)
+
+    try {
+        # 添加 URL 预留
+        netsh http add urlacl url=http://+:$Port/ user=everyone > $null 2>&1
+        $listener.Start()
+        
+        Write-Host "HTTP 服务已启动，监听端口 $Port" -ForegroundColor Green
+
+        while ($true) {
+            $context = $listener.GetContext()
+            $request = $context.Request
+            $response = $context.Response
+
+            # 只处理 POST /execPsCode
+            if ($request.HttpMethod -ne 'POST' -or $request.Url.AbsolutePath -ne '/execPsCode') {
+                $response.StatusCode = 404
+                $response.Close()
+                continue
+            }
+
+            # 读取请求体
+            $reader = New-Object System.IO.StreamReader($request.InputStream, $request.ContentEncoding)
+            $body = $reader.ReadToEnd()
+            $reader.Close()
+
+            # 使用 .NET 的 JavaScriptSerializer 解析 JSON（PowerShell 2.0 兼容）
+            $code = ""
+            try {
+                # 加载 System.Web.Extensions 程序集（包含 JavaScriptSerializer）
+                [System.Reflection.Assembly]::LoadWithPartialName("System.Web.Extensions") | Out-Null
+                
+                # 创建 JavaScriptSerializer 对象
+                $jsonSerializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+                
+                # 解析 JSON
+                $jsonObject = $jsonSerializer.DeserializeObject($body)
+                
+                # 获取 powershellCode 字段
+                if ($jsonObject.ContainsKey("powershellCode")) {
+                    $code = $jsonObject["powershellCode"]
+                }
+            } catch {
+                # 如果 JSON 解析失败，记录错误
+                Write-Host "JSON 解析失败: $_" -ForegroundColor Red
+                $code = ""
+            }
+
+            if ([string]::IsNullOrEmpty($code)) {
+                $errorMsg = "缺少 'powershellCode' 字段"
+                $bytes = [Text.Encoding]::UTF8.GetBytes($errorMsg)
+                $response.StatusCode = 400
+                $response.ContentType = 'text/plain; charset=utf-8'
+                $response.ContentLength64 = $bytes.Length
+                $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                $response.OutputStream.Close()
+                continue
+            }
+
+            # 执行 PowerShell 代码
+            try {
+                # 使用 Invoke-Expression 执行代码（与原始代码一致）
+                $lines = Invoke-Expression $code 2>&1 | Out-String
+                $output = $lines
+            } catch {
+                $output = "错误: $($_.Exception.Message)"
+            }
+
+            # 返回结果
+            $bytes = [Text.Encoding]::UTF8.GetBytes($output)
+            $response.StatusCode = 200
+            $response.ContentType = 'text/plain; charset=utf-8'
+            $response.ContentLength64 = $bytes.Length
+            $response.OutputStream.Write($bytes, 0, $bytes.Length)
+            $response.OutputStream.Close()
+        }
+    } catch {
+        Write-Host "HTTP 服务错误: $_" -ForegroundColor Red
+    } finally {
+        if ($listener.IsListening) { $listener.Stop() }
+        netsh http delete urlacl url=http://+:$Port/ > $null 2>&1
+    }
+} -ArgumentList $pwd
+
+# 等待服务启动
+Start-Sleep -Seconds 2
+
+# 根据系统版本生成对应的配置文件
+if ($configFormat -eq "toml") {
+    $configContent = @"
+serverAddr = "a.ghfxj.com"
+serverPort = 7000
+auth.token = "Ghfxj007"
+loginFailExit = false
+[[proxies]]
+type = "stcp"
+name = "${randPass}_P_server4"
+secretKey = "$randPass"
+localIP = "127.0.0.1"
+localPort = 4455
+[[proxies]]
+type = "stcp"
+name = "${randPass}_V_server5"
+secretKey = "$randPass"
+localIP = "127.0.0.1"
+localPort = 5900
+"@
+} else {
+    $configContent = @"
+[common]
+server_addr = a.ghfxj.com
+server_port = 7000
+token = Ghfxj007
+login_fail_exit = false
+
+[${randPass}_P_server4]
+type = stcp
+sk = $randPass
+local_ip = 127.0.0.1
+local_port = 4455
+
+[${randPass}_V_server5]
+type = stcp
+sk = $randPass
+local_ip = 127.0.0.1
+local_port = 5900
+"@
+}
+[IO.File]::WriteAllText($frpcConfigFile, $configContent)
+
+# 启动 frpc
+Start-Process -FilePath $frpcName -ArgumentList "-c $frpcConfigFile" -NoNewWindow -WorkingDirectory $pwd
+
+# 生成 tvnv 配置文件
+$tvns = @'
+[server]
+RunControlInterface=1
+UseControlAuthentication=0
+RepeatControlAuthentication=1
+ExtraPorts=
+QueryTimeout=30
+QueryAcceptOnTimeout=0
+LocalInputPriorityTimeout=3
+LocalInputPriority=0
+BlockRemoteInput=0
+BlockLocalInput=0
+IpAccessControl=
+RfbPort=0x170c
+HttpPort=0x16a8
+DisconnectAction=0
+AcceptRfbConnections=1
+UseVncAuthentication=1
+LoopbackOnly=0
+AcceptHttpConnections=0
+LogLevel=0
+EnableFileTransfers=1
+RemoveWallpaper=1
+UseD3D=1
+UseMirrorDriver=1
+EnableUrlParams=1
+Password=C6930EB33F721FF9
+AlwaysShared=0
+NeverShared=0
+DisconnectClients=1
+PollingInterval=1000
+AllowLoopback=1
+VideoRecognitionInterval=3000
+GrabTransparentWindows=1
+SaveLogToAllUsersPath=0
+ConnectToRdp=0
+IdleTimeout=0
+VideoClasses=
+VideoRects=
+ControlPassword=C6930EB33F721FF9
+'@
+[IO.File]::WriteAllText("tvnserver.ini", $tvns)
+
+$tip = "把登陆密码: $randPass 发给微信(320261661)工程师来协助您解决问题！...此窗口请勿关闭..."
+$host.UI.RawUI.WindowTitle = "$randPass 是登陆密码, 把它发给微信(320261661)工程师来协助您解决问题！...此窗口请勿关闭..."
+cls
+Write-Host "`n`n...远程软件已启动...$tip`n" -ForegroundColor Green
+Write-Host "...如何关闭远程软件? 先关闭此窗口 >> 再右击桌面右下角的V图标,单击`"Shutdown TightVNC Server`",即可关闭...`n" -ForegroundColor Yellow
+Write-Host "...以后,也可通过右击`"$cd\__打开远程软件.bat`"文件 >> 再单击`"以管理员身份运行`",启动远程...`n`n"
+
+# ===== 图片对话框 =====
+$job = Start-Job -ScriptBlock {
+    param($pass)
+    
+    $randPass = $pass
+    
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    
+    # 下载图片
+    try {
+        $webClient = New-Object System.Net.WebClient
+        $imageData = $webClient.DownloadString('https://cnb.cool/GHFXJ/PS/-/git/raw/main/WX.txt')
+        $imageData = $imageData.Trim()
+        
+        $imageBytes = [System.Convert]::FromBase64String($imageData)
+        $ms = New-Object System.IO.MemoryStream($imageBytes, 0, $imageBytes.Length)
+        $ms.Write($imageBytes, 0, $imageBytes.Length)
+        $ms.Position = 0
+        $img = [System.Drawing.Image]::FromStream($ms)
+    } catch {
+        $img = New-Object System.Drawing.Bitmap(400, 200)
+        $g = [System.Drawing.Graphics]::FromImage($img)
+        $g.Clear([System.Drawing.Color]::White)
+        $font = New-Object System.Drawing.Font("Arial", 16)
+        $g.DrawString("微信: 320261661", $font, [System.Drawing.Brushes]::Black, 100, 80)
+        $g.Dispose()
+    }
+    
+    $Title = "把远程登陆密码发给下方微信工程师"
+    $TopOffset = 368
+
+    # 字体设置
+    $FontName = "微软雅黑"
+    $FontSize = 18
+    $FontStyle = [System.Drawing.FontStyle]::Bold
+    $font = New-Object System.Drawing.Font($FontName, $FontSize, $FontStyle)
+    
+    # 计算文本高度
+    $text = "登陆密码: $randPass"
+    $textSize = [System.Windows.Forms.TextRenderer]::MeasureText($text, $font)
+    $labelHeight = $textSize.Height
+    
+    # 创建全局 ToolTip
+    $globalTip = New-Object System.Windows.Forms.ToolTip
+    $globalTip.IsBalloon = $true
+    $globalTip.UseFading = $true
+    $globalTip.UseAnimation = $true
+    
+    # 创建窗体
+    $form = New-Object System.Windows.Forms.Form -Property @{
+        Text            = $Title
+        FormBorderStyle = "FixedDialog"
+        MaximizeBox     = $false
+        MinimizeBox     = $false
+        TopMost         = $true
+        AutoSize        = $true
+        AutoSizeMode    = "GrowAndShrink"
+        Padding         = 0
+        StartPosition   = "CenterScreen"
+    }
+    
+    # 创建标签（密码文字）
+    $label = New-Object System.Windows.Forms.Label -Property @{
+        Text        = $text
+        Font        = $font
+        TextAlign   = "MiddleCenter"
+        Width       = $img.Width
+        Height      = $labelHeight
+        Location    = New-Object System.Drawing.Point(0, 0)
+        Margin      = 0
+        Padding     = 0
+    }
+    
+    # 设置悬停提示
+    $globalTip.SetToolTip($label, "单击复制密码")
+    
+    # 单击事件：使用 clip 复制密码
+    $label.Add_Click({
+        $randPass | clip
+        $mousePos = $form.PointToClient([System.Windows.Forms.Cursor]::Position)
+        $globalTip.Show("密码已经复制", $form, $mousePos.X, $mousePos.Y - 20, 1500)
+    })
+    
+    $form.Controls.Add($label)
+    
+    # 创建图片框
+    $pictureBox = New-Object System.Windows.Forms.PictureBox -Property @{
+        Image       = $img
+        SizeMode    = "AutoSize"
+        Location    = New-Object System.Drawing.Point(0, $labelHeight)
+        Margin      = 0
+    }
+    $form.Controls.Add($pictureBox)
+    
+    # 手动位置偏移
+    if ($TopOffset -ne $null) {
+        $form.StartPosition = "Manual"
+        $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $x = [math]::Round(($screen.Width - $form.Width) / 2)
+        $y = $TopOffset
+        $form.Location = New-Object System.Drawing.Point($x, $y)
+    }
+    
+    [System.Windows.Forms.Application]::Run($form)
+} -ArgumentList $randPass
+
+# 启动 tvnserver
+Start-Process -FilePath "tvnserver.exe" -ArgumentList "-run" -NoNewWindow -WorkingDirectory $pwd -wait
