@@ -129,17 +129,21 @@ function FindOrCreateFolder {
         if ($mainFolderPath) { break }       # 找到后退出磁盘循环
     }
 
-    # 如果未找到现成主文件夹，则在可用空间最大的分区根目录创建
+    # 如果未找到现成主文件夹，则在可用空间最大的非系统盘分区根目录创建
     if (-not $mainFolderPath -and $targetDrive) {
         $mainFolderPath = "$($targetDrive.DeviceID)\$mainFolderName"
         New-Item -Path $mainFolderPath -ItemType Directory -Force | Out-Null
     }
 
-    # 新增回退逻辑：如果没有任何非系统盘分区可用，则在用户主目录下创建
+    # 回退逻辑：如果没有非系统盘分区可用，则在系统盘根目录下创建
     if (-not $mainFolderPath) {
-        $mainFolderPath = Join-Path $HOME $mainFolderName
-        New-Item -Path $mainFolderPath -ItemType Directory -Force | Out-Null
-        Write-Host "没有找到非系统盘分区，已在用户主目录下创建主文件夹: $mainFolderPath"
+        $mainFolderPath = "$systemDrive\$mainFolderName"
+        # 仅当文件夹不存在时才创建并输出提示，避免重复消息
+        if (-not (Test-Path $mainFolderPath)) {
+            New-Item -Path $mainFolderPath -ItemType Directory -Force | Out-Null
+            Write-Host "没有找到非系统盘分区，已在系统盘根目录下创建主文件夹: $mainFolderPath"
+        }
+        # 如果文件夹已存在，则静默使用（不输出任何提示）
     }
 
     # 判断是否处理子文件夹：只有当 $subFolderName 参数提供且非空时才处理
