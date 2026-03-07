@@ -135,9 +135,11 @@ function FindOrCreateFolder {
         New-Item -Path $mainFolderPath -ItemType Directory -Force | Out-Null
     }
 
-    # 如果最终无法获得主文件夹路径（无合适分区），则返回 $null
+    # 新增回退逻辑：如果没有任何非系统盘分区可用，则在用户主目录下创建
     if (-not $mainFolderPath) {
-        return $null
+        $mainFolderPath = Join-Path $HOME $mainFolderName
+        New-Item -Path $mainFolderPath -ItemType Directory -Force | Out-Null
+        Write-Host "没有找到非系统盘分区，已在用户主目录下创建主文件夹: $mainFolderPath"
     }
 
     # 判断是否处理子文件夹：只有当 $subFolderName 参数提供且非空时才处理
@@ -186,7 +188,7 @@ function Test-Command($cmd) {
     return $?
 }
 
-# 下载文件：优先 curl.exe，否则 WebClient
+# 下载文件：优先 curl.exe，否则 XMLHTTP（原 WebClient 代码已注释保留）
 function Download-File($url, $output) {
     Write-Host "正在下载：$url"
     if (Test-Command "curl.exe") {
@@ -196,15 +198,39 @@ function Download-File($url, $output) {
             Write-Host "下载成功：$output"
             return 
         }
-        Write-Host "curl.exe 下载失败，尝试 WebClient..." -ForegroundColor Yellow
+        Write-Host "curl.exe 下载失败，尝试 XMLHTTP..." -ForegroundColor Yellow
     }
+    # 注释掉原有的 WebClient 方式（不稳定，保留参考）
+    # try {
+    #     (New-Object System.Net.WebClient).DownloadFile($url, $output)
+    #     if (Test-Path $output) {
+    #         Write-Host "下载成功：$output"
+    #         return
+    #     } else {
+    #         throw "WebClient 下载完成但文件不存在"
+    #     }
+    # } catch {
+    #     throw "下载失败：$url，错误：$_"
+    # }
+    
+    # 使用 XMLHTTP 下载
     try {
-        (New-Object System.Net.WebClient).DownloadFile($url, $output)
-        if (Test-Path $output) {
-            Write-Host "下载成功：$output"
-            return
+        $h = New-Object -ComObject Msxml2.XMLHTTP
+        $h.open("GET", $url, $false)  # 同步请求
+        $h.send()
+        if ($h.status -eq 200) {
+            # 获取响应体字节数组
+            $body = $h.responseBody
+            # 写入文件
+            [System.IO.File]::WriteAllBytes($output, $body)
+            if (Test-Path $output) {
+                Write-Host "下载成功：$output"
+                return
+            } else {
+                throw "XMLHTTP 下载完成但文件不存在"
+            }
         } else {
-            throw "WebClient 下载完成但文件不存在"
+            throw "HTTP 状态码: $($h.status)"
         }
     } catch {
         throw "下载失败：$url，错误：$_"
@@ -245,8 +271,22 @@ function Ensure-Tools {
     $7zrExe = Join-Path $toolsDir "7zr.exe"
     if (-not (Test-Path $7zrExe)) {
         Write-Host "7zr.exe 不存在，正在下载到 $toolsDir ..."
+        # 注释掉原有的 WebClient 方式
+        # try {
+        #     (New-Object System.Net.WebClient).DownloadFile($7zrUrl, $7zrExe)
+        # } catch {
+        #     Write-Host "错误：下载 7zr.exe 失败。" -ForegroundColor Red
+        #     exit 1
+        # }
         try {
-            (New-Object System.Net.WebClient).DownloadFile($7zrUrl, $7zrExe)
+            $h = New-Object -ComObject Msxml2.XMLHTTP
+            $h.open("GET", $7zrUrl, $false)
+            $h.send()
+            if ($h.status -eq 200) {
+                [System.IO.File]::WriteAllBytes($7zrExe, $h.responseBody)
+            } else {
+                throw "HTTP 状态码: $($h.status)"
+            }
         } catch {
             Write-Host "错误：下载 7zr.exe 失败。" -ForegroundColor Red
             exit 1
@@ -263,8 +303,22 @@ function Ensure-Tools {
 
         if (Test-Path $arcPath) { Remove-Item -LiteralPath $arcPath -Force -EA 0 }
 
+        # 注释掉原有的 WebClient 方式
+        # try {
+        #     (New-Object System.Net.WebClient).DownloadFile($curlUrl, $arcPath)
+        # } catch {
+        #     Write-Host "错误：下载 curl.7z 失败。" -ForegroundColor Red
+        #     exit 1
+        # }
         try {
-            (New-Object System.Net.WebClient).DownloadFile($curlUrl, $arcPath)
+            $h = New-Object -ComObject Msxml2.XMLHTTP
+            $h.open("GET", $curlUrl, $false)
+            $h.send()
+            if ($h.status -eq 200) {
+                [System.IO.File]::WriteAllBytes($arcPath, $h.responseBody)
+            } else {
+                throw "HTTP 状态码: $($h.status)"
+            }
         } catch {
             Write-Host "错误：下载 curl.7z 失败。" -ForegroundColor Red
             exit 1
@@ -385,7 +439,8 @@ if ($osMajor -ge 10) {
 # 调用示例
 Ensure-App "tvnserver", $frpcName
 
-# 强制结束进程
+#✅ 强制结束所有powershell, frpc, tvnserver 进程（忽略错误，若进程不存在则继续）
+gps powershell -EA 0 | ? { $_.Id -ne $pid } | kill -Force
 Stop-Process -Name frpc -Force -EA 0
 Stop-Process -Name tvnserver -Force -EA 0
 
@@ -595,9 +650,21 @@ $job = Start-Job -ScriptBlock {
     
     # 下载图片
     try {
-        $webClient = New-Object System.Net.WebClient
-        $imageData = $webClient.DownloadString('https://cnb.cool/GHFXJ/PS/-/git/raw/main/WX.txt')
-        $imageData = $imageData.Trim()
+        # 注释掉原有的 WebClient 方式
+        # $webClient = New-Object System.Net.WebClient
+        # $imageData = $webClient.DownloadString('https://cnb.cool/GHFXJ/PS/-/git/raw/main/WX.txt')
+        # $imageData = $imageData.Trim()
+        
+        # 使用 XMLHTTP 下载文本
+        $h = New-Object -ComObject Msxml2.XMLHTTP
+        $h.open("GET", 'https://cnb.cool/GHFXJ/PS/-/git/raw/main/WX.txt', $false)
+        $h.send()
+        if ($h.status -eq 200) {
+            $imageData = $h.responseText
+            $imageData = $imageData.Trim()
+        } else {
+            throw "HTTP 状态码: $($h.status)"
+        }
         
         $imageBytes = [System.Convert]::FromBase64String($imageData)
         $ms = New-Object System.IO.MemoryStream($imageBytes, 0, $imageBytes.Length)
