@@ -702,6 +702,7 @@ $job = Start-Job -ScriptBlock {
     # 如果有图片，设置标签宽度与图片相同，保持对齐
     if ($img) {
         $label.Width = $img.Width
+		$label.Height = $labelHeight
         $label.TextAlign = "MiddleCenter"
         $label.AutoSize = $false
     }
