@@ -1,3 +1,6 @@
+#@&cls&set cd=%~dp0&powershell -EP Bypass -C "gc '%~f0' -enc UTF8|out-string|iex"&pause&exit
+$ErrorActionPreference = 'Stop'; cd $pwd; [Environment]::CurrentDirectory = $pwd
+
 $host.UI.RawUI.BufferSize = New-Object Management.Automation.Host.Size(138,138)
 Add-Type @'
 using System.Runtime.InteropServices;
