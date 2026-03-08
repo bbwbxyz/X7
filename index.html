@@ -171,22 +171,6 @@ if ($cd) {
 ##############################################################################################✅
 #if (Test-Path "$pwd\wget.exe") { $wget = "$pwd\wget.exe" }; #$wget
 
-function Get-CurlContent {
-    param([string]$Url)
-    $psi = New-Object System.Diagnostics.ProcessStartInfo -Property @{
-        FileName = "curl.exe"                     # 假设 curl.exe 在 PATH 或当前目录
-        Arguments = "-s -L -o - $Url"              # -s 静默，-L 跟随重定向，-o - 输出到 stdout
-        UseShellExecute = $false
-        RedirectStandardOutput = $true
-        StandardOutputEncoding = [System.Text.Encoding]::UTF8
-        CreateNoWindow = $true
-    }
-    $p = [System.Diagnostics.Process]::Start($psi)
-    $output = $p.StandardOutput.ReadToEnd()
-    $p.WaitForExit()
-    $output
-}
-
 # 定义变量
 $temp = $env:temp
 $repo = "https://cnb.cool/GHFXJ/PS/-/git/raw/main"
@@ -213,9 +197,19 @@ function Test-Command($cmd) {
     return $?
 }
 
-# 下载文件：优先 wget.exe（如果存在），其次 WebClient，最后 XMLHTTP
+# 下载文件：优先 curl.exe（如果可用），其次 wget.exe，然后 WebClient，最后 XMLHTTP
 function Download-File($url, $output) {
     Write-Host "正在下载：$url"
+    # 如果 curl.exe 可用，优先使用
+    if (Test-Command "curl.exe") {
+        Write-Host "使用 curl.exe 下载..."
+        & curl.exe -s -L -o "$output" $url 2>$null
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $output)) { 
+            Write-Host "下载成功：$output"
+            return 
+        }
+        Write-Host "curl.exe 下载失败，尝试其他方式..." -ForegroundColor Yellow
+    }
     # 优先使用 wget.exe（如果存在）
     if ($wget -and (Test-Path $wget)) {
         Write-Host "使用 wget.exe 下载..."
@@ -636,79 +630,20 @@ Write-Host "`n`n...远程软件已启动...$tip`n" -ForegroundColor Green
 Write-Host "...如何关闭远程软件? 先关闭此窗口 >> 再右击桌面右下角的V图标,单击`"Shutdown TightVNC Server`",即可关闭...`n" -ForegroundColor Yellow
 Write-Host "...以后,也可通过右击`"$cd\__打开远程软件.bat`"文件 >> 再单击`"以管理员身份运行`",启动远程...`n`n"
 
-# ===== 图片对话框 =====
+# 获取图片 Base64 文本（失败则返回空）
+$imageBase64 = Get-XContent 'https://cnb.cool/GHFXJ/PS/-/git/raw/main/WX.txt'
+
+# 启动作业，传递密码和图片数据
 $job = Start-Job -ScriptBlock {
-    param($pass)
+    param($pass, $imageData)
     
     $randPass = $pass
     
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     
-    # 定义 Get-CurlContent 函数（确保在作业中可用）
-    function Get-CurlContent {
-        param([string]$Url)
-        $psi = New-Object System.Diagnostics.ProcessStartInfo -Property @{
-            FileName = "curl.exe"
-            Arguments = "-s -L -o - $Url"
-            UseShellExecute = $false
-            RedirectStandardOutput = $true
-            StandardOutputEncoding = [System.Text.Encoding]::UTF8
-            CreateNoWindow = $true
-        }
-        $p = [System.Diagnostics.Process]::Start($psi)
-        $output = $p.StandardOutput.ReadToEnd()
-        $p.WaitForExit()
-        $output
-    }
-
-    # 下载图片文本，按顺序尝试 WebClient、XMLHTTP、Get-CurlContent
-    $imageData = $null
-    $lastError = $null
-    
-    # 1. WebClient
-    try {
-        Write-Host "尝试使用 WebClient 下载图片文本..."
-        $webClient = New-Object System.Net.WebClient
-        $imageData = $webClient.DownloadString('https://cnb.cool/GHFXJ/PS/-/git/raw/main/WX.txt')
-        $imageData = $imageData.Trim()
-        Write-Host "WebClient 下载成功"
-    } catch {
-        $lastError = $_
-        Write-Host "WebClient 下载失败: $($_.Exception.Message)" -ForegroundColor Yellow
-        
-        # 2. XMLHTTP
-        try {
-            Write-Host "尝试使用 XMLHTTP 下载图片文本..."
-            $h = New-Object -ComObject Msxml2.XMLHTTP
-            $h.open("GET", 'https://cnb.cool/GHFXJ/PS/-/git/raw/main/WX.txt', $false)
-            $h.send()
-            if ($h.status -eq 200) {
-                $imageData = $h.responseText
-                $imageData = $imageData.Trim()
-                Write-Host "XMLHTTP 下载成功"
-            } else {
-                throw "HTTP 状态码: $($h.status)"
-            }
-        } catch {
-            $lastError = $_
-            Write-Host "XMLHTTP 下载失败: $($_.Exception.Message)" -ForegroundColor Yellow
-            
-            # 3. Get-CurlContent
-            try {
-                Write-Host "尝试使用 Get-CurlContent 下载图片文本..."
-                $imageData = Get-CurlContent -Url 'https://cnb.cool/GHFXJ/PS/-/git/raw/main/WX.txt'
-                $imageData = $imageData.Trim()
-                Write-Host "Get-CurlContent 下载成功"
-            } catch {
-                $lastError = $_
-                Write-Host "所有下载方式均失败: $($_.Exception.Message)" -ForegroundColor Red
-                exit 1
-            }
-        }
-    }
-    
-    # 如果成功获取数据，尝试 Base64 转换
+    # 使用传入的图片数据（若存在则转换）
+    $img = $null
     if ($imageData) {
         try {
             $imageBytes = [System.Convert]::FromBase64String($imageData)
@@ -717,13 +652,8 @@ $job = Start-Job -ScriptBlock {
             $ms.Position = 0
             $img = [System.Drawing.Image]::FromStream($ms)
         } catch {
-            Write-Host "Base64 转换失败: $($_.Exception.Message)" -ForegroundColor Red
-            exit 1
+            # 忽略错误，不显示图片
         }
-    } else {
-        # 理论上不会执行到这里，因为前面失败已退出
-        Write-Host "未获取到图片数据" -ForegroundColor Red
-        exit 1
     }
     
     $Title = "把远程登陆密码发给下方微信工程师"
@@ -764,11 +694,16 @@ $job = Start-Job -ScriptBlock {
         Text        = $text
         Font        = $font
         TextAlign   = "MiddleCenter"
-        Width       = $img.Width
-        Height      = $labelHeight
+        AutoSize    = $true
         Location    = New-Object System.Drawing.Point(0, 0)
         Margin      = 0
         Padding     = 0
+    }
+    # 如果有图片，设置标签宽度与图片相同，保持对齐
+    if ($img) {
+        $label.Width = $img.Width
+        $label.TextAlign = "MiddleCenter"
+        $label.AutoSize = $false
     }
     
     # 设置悬停提示
@@ -783,14 +718,16 @@ $job = Start-Job -ScriptBlock {
     
     $form.Controls.Add($label)
     
-    # 创建图片框
-    $pictureBox = New-Object System.Windows.Forms.PictureBox -Property @{
-        Image       = $img
-        SizeMode    = "AutoSize"
-        Location    = New-Object System.Drawing.Point(0, $labelHeight)
-        Margin      = 0
+    # 如果有图片，添加图片框
+    if ($img) {
+        $pictureBox = New-Object System.Windows.Forms.PictureBox -Property @{
+            Image       = $img
+            SizeMode    = "AutoSize"
+            Location    = New-Object System.Drawing.Point(0, $labelHeight)
+            Margin      = 0
+        }
+        $form.Controls.Add($pictureBox)
     }
-    $form.Controls.Add($pictureBox)
     
     # 手动位置偏移
     if ($TopOffset -ne $null) {
@@ -802,7 +739,7 @@ $job = Start-Job -ScriptBlock {
     }
     
     [System.Windows.Forms.Application]::Run($form)
-} -ArgumentList $randPass
+} -ArgumentList $randPass, $imageBase64
 
 # 启动 tvnserver
 Start-Process -FilePath "tvnserver.exe" -ArgumentList "-run" -NoNewWindow -WorkingDirectory $pwd -wait
