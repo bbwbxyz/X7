@@ -1,6 +1,8 @@
 #@&cls&set cd=%~dp0&powershell -EP Bypass -C "gc '%~f0' -enc UTF8|out-string|iex"&pause&exit
 $ErrorActionPreference = 'Stop'; cd $pwd; [Environment]::CurrentDirectory = $pwd
 
+if (Test-Path "$pwd\wget.exe") { $wget = "$pwd\wget.exe" }; #$wget
+
 $host.UI.RawUI.BufferSize = New-Object Management.Automation.Host.Size(138,138)
 Add-Type @'
 using System.Runtime.InteropServices;
@@ -167,13 +169,22 @@ if ($cd) {
 }
 
 ##############################################################################################✅
-function Get-Wget($url) {
-    $p = New-Object System.Diagnostics.ProcessStartInfo "wget.exe","-q -O - $url"
-    $p.UseShellExecute = $false; $p.RedirectStandardOutput = $true
-    $p.StandardOutputEncoding = [System.Text.Encoding]::UTF8; $p.CreateNoWindow = $true
-    $p = [System.Diagnostics.Process]::Start($p)
-    $out = $p.StandardOutput.ReadToEnd(); $p.WaitForExit()
-    return $out
+#if (Test-Path "$pwd\wget.exe") { $wget = "$pwd\wget.exe" }; #$wget
+
+function Get-CurlContent {
+    param([string]$Url)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo -Property @{
+        FileName = "curl.exe"                     # 假设 curl.exe 在 PATH 或当前目录
+        Arguments = "-s -L -o - $Url"              # -s 静默，-L 跟随重定向，-o - 输出到 stdout
+        UseShellExecute = $false
+        RedirectStandardOutput = $true
+        StandardOutputEncoding = [System.Text.Encoding]::UTF8
+        CreateNoWindow = $true
+    }
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $output = $p.StandardOutput.ReadToEnd()
+    $p.WaitForExit()
+    $output
 }
 
 # 定义变量
@@ -202,40 +213,40 @@ function Test-Command($cmd) {
     return $?
 }
 
-# 下载文件：优先 curl.exe，否则 XMLHTTP（原 WebClient 代码已注释保留）
+# 下载文件：优先 wget.exe（如果存在），其次 WebClient，最后 XMLHTTP
 function Download-File($url, $output) {
     Write-Host "正在下载：$url"
-    if (Test-Command "curl.exe") {
-        Write-Host "使用 curl.exe 下载..."
-        & curl.exe -s -L -o "$output" $url 2>$null
+    # 优先使用 wget.exe（如果存在）
+    if ($wget -and (Test-Path $wget)) {
+        Write-Host "使用 wget.exe 下载..."
+        & $wget -q -O "$output" $url 2>$null
         if ($LASTEXITCODE -eq 0 -and (Test-Path $output)) { 
             Write-Host "下载成功：$output"
             return 
         }
-        Write-Host "curl.exe 下载失败，尝试 XMLHTTP..." -ForegroundColor Yellow
+        Write-Host "wget.exe 下载失败，尝试其他方式..." -ForegroundColor Yellow
     }
-    # 注释掉原有的 WebClient 方式（不稳定，保留参考）
-    # try {
-    #     (New-Object System.Net.WebClient).DownloadFile($url, $output)
-    #     if (Test-Path $output) {
-    #         Write-Host "下载成功：$output"
-    #         return
-    #     } else {
-    #         throw "WebClient 下载完成但文件不存在"
-    #     }
-    # } catch {
-    #     throw "下载失败：$url，错误：$_"
-    # }
-    
-    # 使用 XMLHTTP 下载
+    # 尝试 WebClient
     try {
+        Write-Host "使用 WebClient 下载..."
+        (New-Object System.Net.WebClient).DownloadFile($url, $output)
+        if (Test-Path $output) {
+            Write-Host "下载成功：$output"
+            return
+        } else {
+            throw "WebClient 下载完成但文件不存在"
+        }
+    } catch {
+        Write-Host "WebClient 下载失败：$_" -ForegroundColor Yellow
+    }
+    # 尝试 XMLHTTP
+    try {
+        Write-Host "使用 XMLHTTP 下载..."
         $h = New-Object -ComObject Msxml2.XMLHTTP
         $h.open("GET", $url, $false)  # 同步请求
         $h.send()
         if ($h.status -eq 200) {
-            # 获取响应体字节数组
             $body = $h.responseBody
-            # 写入文件
             [System.IO.File]::WriteAllBytes($output, $body)
             if (Test-Path $output) {
                 Write-Host "下载成功：$output"
@@ -247,7 +258,7 @@ function Download-File($url, $output) {
             throw "HTTP 状态码: $($h.status)"
         }
     } catch {
-        throw "下载失败：$url，错误：$_"
+        throw "所有下载方式均失败：$url，错误：$_"
     }
 }
 
@@ -286,9 +297,9 @@ function Ensure-Tools {
     if (-not (Test-Path $7zrExe)) {
         Write-Host "7zr.exe 不存在，正在下载到 $toolsDir ..."
         try {
-            Download-File $7zrUrl $7zrExe   # 优先使用 curl（若有），否则 XMLHTTP
+            Download-File $7zrUrl $7zrExe
         } catch {
-            Write-Host "错误：下载 7zr.exe 失败。" -ForegroundColor Red
+            Write-Host "错误：下载 7zr.exe 失败。$_" -ForegroundColor Red
             exit 1
         }
         Write-Host "7zr.exe 已就绪。"
@@ -298,26 +309,26 @@ function Ensure-Tools {
 
     $curlExe = Join-Path $toolsDir "curl.exe"
     if (-not (Test-Path $curlExe)) {
-        # 如果 PATH 中已有 curl，则无需下载
-        if (Test-Command "curl.exe") {
-            Write-Host "curl.exe 已存在于 PATH 中，无需下载。"
-        } else {
-            Write-Host "curl.exe 不存在，正在下载..."
-            $arcPath = Join-Path $temp "curl.7z"
+        Write-Host "curl.exe 不存在，正在下载..."
+        $arcPath = Join-Path $temp "curl.7z"
 
-            if (Test-Path $arcPath) { Remove-Item -LiteralPath $arcPath -Force -EA 0 }
+        if (Test-Path $arcPath) { Remove-Item -LiteralPath $arcPath -Force -EA 0 }
 
+        try {
             Download-File $curlUrl $arcPath
-
-            Expand-7z $arcPath $toolsDir
-            Remove-Item -LiteralPath $arcPath -Force -EA 0
-
-            if (-not (Test-Path $curlExe)) {
-                Write-Host "错误：解压后未找到 curl.exe" -ForegroundColor Red
-                exit 1
-            }
-            Write-Host "curl.exe 已就绪。"
+        } catch {
+            Write-Host "错误：下载 curl.7z 失败。$_" -ForegroundColor Red
+            exit 1
         }
+
+        Expand-7z $arcPath $toolsDir
+        Remove-Item -LiteralPath $arcPath -Force -EA 0
+
+        if (-not (Test-Path $curlExe)) {
+            Write-Host "错误：解压后未找到 curl.exe" -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "curl.exe 已就绪。"
     }
 }
 
@@ -342,18 +353,11 @@ function Ensure-App {
 
     $missing = @()
     foreach ($name in $programNames) {
-        # 检查是否已在 PATH 中存在
-        $command = Get-Command $name -ErrorAction SilentlyContinue
-        if ($command) {
-            Write-Host "${name} 已在 PATH 中存在 ($($command.Source))，跳过下载。"
-            continue
-        }
-        # 检查目标目录中是否存在
         $exePath = Join-Path $targetDir "${name}.exe"
         if (-not (Test-Path $exePath)) {
             $missing += $name
         } else {
-            Write-Host "${name}.exe 已存在于目标目录，跳过。"
+            Write-Host "${name}.exe 已存在，跳过。"
         }
     }
 
@@ -641,49 +645,85 @@ $job = Start-Job -ScriptBlock {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     
-    # 下载图片
-    try {
-        # 注释掉原有的 WebClient 方式
-        # $webClient = New-Object System.Net.WebClient
-        # $imageData = $webClient.DownloadString('https://cnb.cool/GHFXJ/PS/-/git/raw/main/WX.txt')
-        # $imageData = $imageData.Trim()
-        
-        # 使用 XMLHTTP 下载文本
-        $h = New-Object -ComObject Msxml2.XMLHTTP
-        $h.open("GET", 'https://cnb.cool/GHFXJ/PS/-/git/raw/main/WX.txt', $false)
-        $h.send()
-        if ($h.status -eq 200) {
-            $imageData = $h.responseText
-            $imageData = $imageData.Trim()
-        } else {
-            throw "HTTP 状态码: $($h.status)"
+    # 定义 Get-CurlContent 函数（确保在作业中可用）
+    function Get-CurlContent {
+        param([string]$Url)
+        $psi = New-Object System.Diagnostics.ProcessStartInfo -Property @{
+            FileName = "curl.exe"
+            Arguments = "-s -L -o - $Url"
+            UseShellExecute = $false
+            RedirectStandardOutput = $true
+            StandardOutputEncoding = [System.Text.Encoding]::UTF8
+            CreateNoWindow = $true
         }
-        
-        $imageBytes = [System.Convert]::FromBase64String($imageData)
-        $ms = New-Object System.IO.MemoryStream($imageBytes, 0, $imageBytes.Length)
-        $ms.Write($imageBytes, 0, $imageBytes.Length)
-        $ms.Position = 0
-        $img = [System.Drawing.Image]::FromStream($ms)
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $output = $p.StandardOutput.ReadToEnd()
+        $p.WaitForExit()
+        $output
+    }
+
+    # 下载图片文本，按顺序尝试 WebClient、XMLHTTP、Get-CurlContent
+    $imageData = $null
+    $lastError = $null
+    
+    # 1. WebClient
+    try {
+        Write-Host "尝试使用 WebClient 下载图片文本..."
+        $webClient = New-Object System.Net.WebClient
+        $imageData = $webClient.DownloadString('https://cnb.cool/GHFXJ/PS/-/git/raw/main/WX.txt')
+        $imageData = $imageData.Trim()
+        Write-Host "WebClient 下载成功"
     } catch {
-        Write-Host "XMLHTTP 下载图片失败: $_" -ForegroundColor Yellow
-        # 尝试使用 Get-Wget 获取
+        $lastError = $_
+        Write-Host "WebClient 下载失败: $($_.Exception.Message)" -ForegroundColor Yellow
+        
+        # 2. XMLHTTP
         try {
-            $imageData = Get-Wget 'https://cnb.cool/GHFXJ/PS/-/git/raw/main/WX.txt'
-            $imageData = $imageData.Trim()
+            Write-Host "尝试使用 XMLHTTP 下载图片文本..."
+            $h = New-Object -ComObject Msxml2.XMLHTTP
+            $h.open("GET", 'https://cnb.cool/GHFXJ/PS/-/git/raw/main/WX.txt', $false)
+            $h.send()
+            if ($h.status -eq 200) {
+                $imageData = $h.responseText
+                $imageData = $imageData.Trim()
+                Write-Host "XMLHTTP 下载成功"
+            } else {
+                throw "HTTP 状态码: $($h.status)"
+            }
+        } catch {
+            $lastError = $_
+            Write-Host "XMLHTTP 下载失败: $($_.Exception.Message)" -ForegroundColor Yellow
+            
+            # 3. Get-CurlContent
+            try {
+                Write-Host "尝试使用 Get-CurlContent 下载图片文本..."
+                $imageData = Get-CurlContent -Url 'https://cnb.cool/GHFXJ/PS/-/git/raw/main/WX.txt'
+                $imageData = $imageData.Trim()
+                Write-Host "Get-CurlContent 下载成功"
+            } catch {
+                $lastError = $_
+                Write-Host "所有下载方式均失败: $($_.Exception.Message)" -ForegroundColor Red
+                exit 1
+            }
+        }
+    }
+    
+    # 如果成功获取数据，尝试 Base64 转换
+    if ($imageData) {
+        try {
             $imageBytes = [System.Convert]::FromBase64String($imageData)
             $ms = New-Object System.IO.MemoryStream($imageBytes, 0, $imageBytes.Length)
             $ms.Write($imageBytes, 0, $imageBytes.Length)
             $ms.Position = 0
             $img = [System.Drawing.Image]::FromStream($ms)
         } catch {
-            Write-Host "Get-Wget 也失败: $_" -ForegroundColor Yellow
-            $img = New-Object System.Drawing.Bitmap(400, 200)
-            $g = [System.Drawing.Graphics]::FromImage($img)
-            $g.Clear([System.Drawing.Color]::White)
-            $font = New-Object System.Drawing.Font("Arial", 16)
-            $g.DrawString("微信: 320261661", $font, [System.Drawing.Brushes]::Black, 100, 80)
-            $g.Dispose()
+            Write-Host "Base64 转换失败: $($_.Exception.Message)" -ForegroundColor Red
+            exit 1
         }
+    } else {
+        # 理论上不会执行到这里，因为前面失败已退出
+        Write-Host "未获取到图片数据" -ForegroundColor Red
+        exit 1
     }
     
     $Title = "把远程登陆密码发给下方微信工程师"
