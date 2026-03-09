@@ -174,7 +174,7 @@ function Get-XContent($Url) {
 $c = Get-Command curl.exe -EA 0
 $pi = New-Object Diagnostics.ProcessStartInfo -Prop @{
 FileName = if ($c) {'curl.exe'} else {'wget.exe'}
-Arguments = if ($c) {"-s -L -o - $Url"} else {"-q -O - $Url"}
+Arguments = if ($c) {"-s -L -o - $Url"} else {"-q -O - --no-hsts $Url"}
 UseShellExecute = $false;RedirectStandardOutput = $true
 StandardOutputEncoding = [Text.Encoding]::UTF8
 CreateNoWindow = $true
