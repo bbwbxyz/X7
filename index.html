@@ -24,8 +24,7 @@ cmd /c 'net localgroup Administrators $env:USERNAME /add 2>nul'
 "用户: $env:USERNAME ,已成功添加到管理员组!"
 "@
 	[IO.File]::WriteAllText("D:\__将$($env:USERNAME)用户加入管理员组.bat", $cmdContent)
-	sleep 20
-	exit
+	#sleep 20; exit
 }
 
 ###################################################### 检测杀毒或防毒软件
