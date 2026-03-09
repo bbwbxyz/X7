@@ -17,14 +17,11 @@ public static class WinApi{
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (!$isAdmin)
 {
-	Write-Host "很遗憾! 电脑当前登陆的用户『$($env:USERNAME)』没有管理员权限, 我无法执行! `n若仍想执行, 请按如下步骤操作:`n`n1.先注销当前用户,选择『Administrator』帐户登陆;`n2.然后执行D盘下名为『__将$($env:USERNAME)用户加入管理员组.bat』的文件;`n3.重启系统,选择『$($env:USERNAME)』用户登陆;`n4.再次尝试在运行框中执行我`n`n20秒后自动退出！"
-	$cmdContent = @"
-#@&cls&powershell -EP Bypass -C "gc '%~f0' -enc UTF8|out-string|iex"&pause
-cmd /c 'net localgroup Administrators $env:USERNAME /add 2>nul'
-"用户: $env:USERNAME ,已成功添加到管理员组!"
-"@
-	[IO.File]::WriteAllText("D:\__将$($env:USERNAME)用户加入管理员组.bat", $cmdContent)
-	#sleep 20; exit
+	Write-Host "警告: 您当前登陆的帐户『$($env:USERNAME)』没有管理员权限, 远程操作将会受到限制!"
+	Write-Host "请做如下选择:"
+	Write-Host "A.关闭当前窗口,在程序图标的右键菜单中选择『以管理员身份运行』"
+	Write-Host "B.等待10秒后程序将继续执行!"
+	sleep 10; #exit
 }
 
 ###################################################### 检测杀毒或防毒软件
