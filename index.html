@@ -17,7 +17,7 @@ public static class WinApi{
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (!$isAdmin)
 {
-	Write-Host "警告: 您当前登陆的帐户 $($env:USERNAME) 没有管理员权限, 远程操作将会受到限制!" -ForegroundColor Green
+	Write-Host "警告: 您当前登陆的帐户: $($env:USERNAME) 没有管理员权限, 远程操作将会受到限制!" -ForegroundColor Green
 	Write-Host "可做如下选择:" -ForegroundColor Yellow
 	Write-Host "A.关闭当前窗口,在程序图标的右键菜单中选择『以管理员身份运行』"
 	Write-Host "B.等待10秒,让程序继续执行!"
